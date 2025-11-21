@@ -2,13 +2,12 @@ import tensorflow as tf
 import numpy as np
 import os
 
-# ================= CẤU HÌNH =================
-PREFIX = "PERSON_DETECT_MODEL"  # Tên tiền tố cho các file đầu ra
-DATA_DIR = 'dataset'            # Tên thư mục chứa dữ liệu ảnh
-IMG_HEIGHT = 240                # Chiều cao ảnh đầu vào cho mô hình
-IMG_WIDTH = 240                 # Chiều rộng ảnh đầu vào cho mô hình
-BATCH_SIZE = 16                 # Số lượng ảnh xử lý trong một lần (batch)
-EPOCHS = 10                     # Số lần duyệt qua toàn bộ tập dữ liệu
+PREFIX = "PERSON_DETECT_MODEL"  
+DATA_DIR = 'dataset'            
+IMG_HEIGHT = 240                
+IMG_WIDTH = 240                 
+BATCH_SIZE = 32                 
+EPOCHS = 20                     
 
 data = tf.keras.preprocessing.image_dataset_from_directory(
     DATA_DIR,
