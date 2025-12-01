@@ -3,35 +3,20 @@ import numpy as np
 import os
 from PIL import Image
 
-PREFIX = "PERSON_DETECT_MODEL"
+PREFIX = "person_detect_model"
 DATA_DIR = 'dataset'
 IMG_HEIGHT = 240
 IMG_WIDTH = 240
 
-BATCH_SIZE = 8   
-EPOCHS = 30
-
-if os.path.exists(DATA_DIR):
-    for root, _, files in os.walk(DATA_DIR):
-        for f in files:
-            if f.lower().endswith(('.jpg', '.jpeg', '.png')):
-                path = os.path.join(root, f)
-                try:
-                    with Image.open(path) as img:
-                        if img.mode != 'RGB':
-                            img = img.convert('RGB')
-                            img.save(path, quality=95)
-                except:
-                    os.remove(path)
-else:
-    exit()
+BATCH_SIZE = 16   
+EPOCHS = 40     
 
 data_augmentation = tf.keras.Sequential([
     tf.keras.layers.RandomFlip("horizontal"),
-    tf.keras.layers.RandomRotation(0.2),
-    tf.keras.layers.RandomZoom(0.2),
-    tf.keras.layers.RandomContrast(0.2),
-    tf.keras.layers.RandomBrightness(0.2),
+    tf.keras.layers.RandomRotation(0.2),      
+    tf.keras.layers.RandomZoom(0.2),          
+    tf.keras.layers.RandomContrast(0.2),      
+    tf.keras.layers.RandomBrightness(0.2),    
 ])
 
 train_ds = tf.keras.utils.image_dataset_from_directory(
@@ -46,74 +31,66 @@ val_ds = tf.keras.utils.image_dataset_from_directory(
     color_mode='rgb'
 )
 
-base_model = tf.keras.applications.MobileNetV2(
-    input_shape=(IMG_HEIGHT, IMG_WIDTH, 3),
-    include_top=False,
-    weights='imagenet',
-    alpha=0.35
-)
+class_counts = {}
+for class_name in train_ds.class_names:
+    class_dir = os.path.join(DATA_DIR, class_name)
+    class_counts[class_name] = len([f for f in os.listdir(class_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
 
-base_model.trainable = False
+total_samples = sum(class_counts.values())
+class_weights = {}
+for i, (class_name, count) in enumerate(class_counts.items()):
+    class_weights[i] = total_samples / (len(class_counts) * count)
 
 model = tf.keras.Sequential([
     tf.keras.layers.InputLayer(input_shape=(IMG_HEIGHT, IMG_WIDTH, 3)),
     
     data_augmentation,
-    tf.keras.layers.Rescaling(1./127.5, offset=-1),  
+    tf.keras.layers.Rescaling(1./255),
     
-    base_model,
+    tf.keras.layers.Conv2D(32, 3, activation='relu', padding='same'),
+    tf.keras.layers.MaxPooling2D(2),
+    
+    tf.keras.layers.Conv2D(64, 3, activation='relu', padding='same'),
+    tf.keras.layers.MaxPooling2D(2),
+    
+    tf.keras.layers.Conv2D(128, 3, activation='relu', padding='same'),
+    tf.keras.layers.MaxPooling2D(2),
     
     tf.keras.layers.GlobalAveragePooling2D(),
-    tf.keras.layers.Dropout(0.3),
+
     tf.keras.layers.Dense(64, activation='relu'),
-    tf.keras.layers.Dropout(0.3), 
+
+    tf.keras.layers.Dropout(0.5),
     tf.keras.layers.Dense(len(train_ds.class_names), activation='softmax')
 ])
 
-model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
-
-print("Phase 1: Training with frozen MobileNetV2...")
-history = model.fit(train_ds, validation_data=val_ds, epochs=10)
-
-base_model.trainable = True
-for layer in base_model.layers[:-30]:
-    layer.trainable = False
-
 model.compile(
-    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),  
-    loss='sparse_categorical_crossentropy', 
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+    loss='sparse_categorical_crossentropy',
     metrics=['accuracy']
 )
 
-print("\nPhase 2: Fine-tuning top layers...")
-history_fine = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS-10)
-
-def representative_data_gen():
-    for input_value, _ in val_ds.take(100):
-        yield [tf.cast(input_value, tf.float32)]
+history = model.fit(
+    train_ds,
+    validation_data=val_ds,
+    epochs=EPOCHS,
+    class_weight=class_weights,
+    callbacks=[
+        tf.keras.callbacks.EarlyStopping(patience=8, restore_best_weights=True), # Tăng patience lên
+        tf.keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=4, verbose=1)
+    ]
+)
 
 converter = tf.lite.TFLiteConverter.from_keras_model(model)
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
-converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-converter.inference_input_type = tf.int8
-converter.inference_output_type = tf.int8
-converter.representative_dataset = representative_data_gen
-
-try:
-    tflite_model = converter.convert()
-except Exception as e:
-    converter.inference_input_type = tf.float32
-    converter.inference_output_type = tf.float32
-    tflite_model = converter.convert()
+tflite_model = converter.convert()
 
 with open(PREFIX + ".tflite", "wb") as f:
     f.write(tflite_model)
 
-print(f"\n{'='*50}")
 print(f"Kích thước Model: {len(tflite_model)/1024:.2f} KB")
-print(f"Training Accuracy: {history_fine.history['accuracy'][-1]*100:.2f}%")
-print(f"Validation Accuracy: {history_fine.history['val_accuracy'][-1]*100:.2f}%")
-print(f"{'='*50}")
+print(f"Final Train Acc: {history.history['accuracy'][-1]:.4f}")
+print(f"Final Val Acc: {history.history['val_accuracy'][-1]:.4f}")
 
 tflite_path = PREFIX + '.tflite'
 output_header_path = PREFIX + '.h'
@@ -129,3 +106,4 @@ with open(output_header_path, 'w') as header_file:
     header_file.write(f'const unsigned char {PREFIX.lower()}[] = {{\n  ')
     header_file.write(f'{hex_array}\n')
     header_file.write('};\n')
+
