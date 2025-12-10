@@ -3,9 +3,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
 import numpy as np
+import matplotlib.pyplot as plt
+import time
 
 PREFIX = "dht_anomaly_model"
-MODE = "TEST"  # "TRAIN", "TEST", or "FULL"
+MODE = "FULL"  # "TRAIN", "TEST", or "FULL"
 
 # ============ LOAD & SCALE DATA ============
 data = pd.read_csv("dataset.csv", names=["Temperature (C)", "Humidity (%)", "Label"])
@@ -27,9 +29,15 @@ model.compile(loss="binary_crossentropy", optimizer='adam', metrics=["accuracy"]
 
 # ============ TRAIN ============
 if MODE in ["TRAIN", "FULL"]:
+    start_time = time.time()
+    
     class_weights = {0: 4.5, 1: 1.0}
-    model.fit(X_train, y_train, epochs=50, batch_size=16, 
-              validation_data=(X_test, y_test), class_weight=class_weights, verbose=1)
+    history = model.fit(X_train, y_train, epochs=50, batch_size=16, 
+                        validation_data=(X_test, y_test), class_weight=class_weights, verbose=1)
+    
+    train_time = time.time() - start_time
+    print(f"\n⏱️ Training time: {train_time:.2f} seconds ({train_time/60:.2f} minutes)")
+    
     model.save(PREFIX + '.h5')
     
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
@@ -46,6 +54,33 @@ if MODE in ["TRAIN", "FULL"]:
         header_file.write(f'const unsigned char {PREFIX}_tflite[] = {{\n  ')
         header_file.write(f'{hex_array}\n')
         header_file.write('};\n')
+    
+    # Plot training history
+    plt.figure(figsize=(12, 4))
+    
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['loss'], label='Train Loss')
+    plt.plot(history.history['val_loss'], label='Val Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Model Loss')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['accuracy'], label='Train Accuracy')
+    plt.plot(history.history['val_accuracy'], label='Val Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.title('Model Accuracy')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(PREFIX + '_training_history.png', dpi=100, bbox_inches='tight')
+    plt.show()
+    
+    print(f"✅ Training history saved: {PREFIX}_training_history.png")
     
 else:
     model = tf.keras.models.load_model(PREFIX + '.h5')
