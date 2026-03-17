@@ -2,119 +2,117 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
-import numpy as np
 import matplotlib.pyplot as plt
-import time
 
 PREFIX = "dht_anomaly_model"
-MODE = "FULL"  # "TRAIN", "TEST", or "FULL"
+ALERT_LEVELS = {
+    0: "normal",
+    1: "warning",
+    2: "critical",
+}
 
-# ============ LOAD & SCALE DATA ============
-data = pd.read_csv("dataset.csv", names=["Temperature (C)", "Humidity (%)", "Label"])
-X = data[["Temperature (C)", "Humidity (%)"]].values
-y = data["Label"].values
+data = pd.read_csv("dataset.csv")
+data.columns = [col.strip().lower() for col in data.columns]
+
+X = data[["temperature", "humidity"]].values.astype("float32")
+y = data["label"].values.astype("int32")
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y,
+)
 
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
 
-# ============ BUILD MODEL ============
 model = tf.keras.Sequential([
     tf.keras.layers.Input(shape=(2,)),
-    tf.keras.layers.Dense(16, activation='relu'),
-    tf.keras.layers.Dense(8, activation='relu'),
-    tf.keras.layers.Dense(1, activation='sigmoid')
+    tf.keras.layers.Dense(16, activation="relu"),
+    tf.keras.layers.Dense(8, activation="relu"),
+    tf.keras.layers.Dense(3, activation="softmax")
 ])
-model.compile(loss="binary_crossentropy", optimizer='adam', metrics=["accuracy"])
 
-# ============ TRAIN ============
-if MODE in ["TRAIN", "FULL"]:
-    start_time = time.time()
-    
-    class_weights = {0: 4.5, 1: 1.0}
-    history = model.fit(X_train, y_train, epochs=50, batch_size=16, 
-                        validation_data=(X_test, y_test), class_weight=class_weights, verbose=1)
-    
-    train_time = time.time() - start_time
-    print(f"\n⏱️ Training time: {train_time:.2f} seconds ({train_time/60:.2f} minutes)")
-    
-    model.save(PREFIX + '.h5')
-    
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    tflite_model = converter.convert()
-    with open(PREFIX + ".tflite", "wb") as f:
-        f.write(tflite_model)
-    
-    # Convert to C header
-    hex_lines = [', '.join([f'0x{byte:02x}' for byte in tflite_model[i:i + 12]]) 
-                 for i in range(0, len(tflite_model), 12)]
-    hex_array = ',\n  '.join(hex_lines)
-    
-    with open(PREFIX + ".h", 'w') as header_file:
-        header_file.write(f'const unsigned char {PREFIX}_tflite[] = {{\n  ')
-        header_file.write(f'{hex_array}\n')
-        header_file.write('};\n')
-    
-    # Plot training history
-    plt.figure(figsize=(12, 4))
-    
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history['loss'], label='Train Loss')
-    plt.plot(history.history['val_loss'], label='Val Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Model Loss')
-    plt.legend()
-    plt.grid(True)
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(history.history['accuracy'], label='Train Accuracy')
-    plt.plot(history.history['val_accuracy'], label='Val Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.title('Model Accuracy')
-    plt.legend()
-    plt.grid(True)
-    
-    plt.tight_layout()
-    plt.savefig(PREFIX + '_training_history.png', dpi=100, bbox_inches='tight')
-    plt.show()
-    
-    print(f"✅ Training history saved: {PREFIX}_training_history.png")
-    
-else:
-    model = tf.keras.models.load_model(PREFIX + '.h5')
+model.compile(
+    loss="sparse_categorical_crossentropy",
+    optimizer="adam",
+    metrics=["accuracy"],
+)
 
-# ============ TEST ============
-if MODE in ["TEST", "FULL"]:
-    interpreter = tf.lite.Interpreter(model_path=PREFIX + ".tflite")
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
+# Thêm EarlyStopping để dừng khi val_loss không cải thiện sau 5 epochs
+early_stop = tf.keras.callbacks.EarlyStopping(
+    monitor='val_loss',
+    patience=5,
+    restore_best_weights=True
+)
 
-    test_cases = [
-        (20.0, 0.40, "Cool, 40%"), (22.0, 0.45, "Cool, 45%"), 
-        (24.0, 0.50, "Comfortable"), (26.0, 0.60, "Room, 60%"),
-        (30.0, 0.50, "Warm, 50%"), (35.0, 0.40, "Very hot"),
-        (5.0, 0.05, "Freezing"), (45.0, 0.95, "Very hot, 95%"),
-        (18.0, 0.35, "Cool, 35%"), (28.0, 0.55, "Warm, 55%"),
-        (32.0, 0.45, "Hot, 45%"), (38.0, 0.40, "Very hot, 40%"),
-        (10.0, 0.10, "Cold, 10%"), (15.0, 0.90, "Cool, 90%"),
-        (42.0, 0.92, "Extreme hot, 92%"), (3.0, 0.03, "Freezing, 3%"),
-        (25.0, 0.50, "Room, 50%"), (27.0, 0.65, "Warm, 65%"),
-        (33.0, 0.30, "Hot, 30%"), (40.0, 0.85, "Very hot, 85%"),
-    ]
+# Lưu kết quả vào biến history
+history = model.fit(
+    X_train,
+    y_train,
+    epochs=100,
+    validation_data=(X_test, y_test),
+    callbacks=[early_stop],
+    verbose=1
+)
 
-    print(f"{'Temp°C':<8} {'Humid':<8} {'Prediction':<12} {'Label':<15}")
-    print("-" * 50)
-    
-    for temp, humid, desc in test_cases:
-        test_scaled = scaler.transform([[temp, humid]]).astype(np.float32)
-        interpreter.set_tensor(input_details[0]['index'], test_scaled.reshape(1, 2))
-        interpreter.invoke()
-        pred = interpreter.get_tensor(output_details[0]['index'])[0][0]
-        label = "🔴 ANOMALY" if pred > 0.5 else "🟢 NORMAL"
-        print(f"{temp:<8.1f} {humid:<8.2f} {pred:<12.4f} {label}")
-    
-    print(f"\n📝 Scaling constants: Temp mean={scaler.mean_[0]:.2f}, Humid mean={scaler.mean_[1]:.4f}")
-    print(f"📝 Scaling constants: Temp std={np.sqrt(scaler.var_[0]):.2f}, Humid std={np.sqrt(scaler.var_[1]):.4f}")
+# Plot training curves and save as image
+plt.figure(figsize=(10, 4))
+
+plt.subplot(1, 2, 1)
+plt.plot(history.history["accuracy"], label="train")
+plt.plot(history.history["val_accuracy"], label="val")
+plt.title("Accuracy")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy")
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(history.history["loss"], label="train")
+plt.plot(history.history["val_loss"], label="val")
+plt.title("Loss")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.legend()
+
+plt.tight_layout()
+plt.savefig(PREFIX + "_training_plot.png", dpi=150)
+plt.close()
+
+model.save(PREFIX + ".h5")
+
+def predict_alert_level(temperature, humidity):
+    sample = tf.convert_to_tensor([[temperature, humidity]], dtype=tf.float32)
+    scaled_sample = scaler.transform(sample.numpy())
+    scaled_sample = tf.convert_to_tensor(scaled_sample, dtype=tf.float32)
+    probs = model(scaled_sample, training=False).numpy()[0]
+    level = int(tf.argmax(probs).numpy())
+    return level, ALERT_LEVELS[level], probs
+
+loss, acc = model.evaluate(X_test, y_test, verbose=0)
+print(f"Test accuracy: {acc:.4f}")
+
+# Convert to TFLite
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+tflite_model = converter.convert()
+
+with open(PREFIX + ".tflite", "wb") as f:
+    f.write(tflite_model)
+
+tflite_path = PREFIX + '.tflite'
+output_header_path = PREFIX + '.h'
+
+with open(tflite_path, 'rb') as tflite_file:
+    tflite_content = tflite_file.read()
+
+hex_lines = [', '.join([f'0x{byte:02x}' for byte in tflite_content[i:i + 12]]) for i in range(0, len(tflite_content), 12)]
+hex_array = ',\n  '.join(hex_lines)
+
+with open(output_header_path, 'w') as header_file:
+    header_file.write('const unsigned char dht_anomaly_model_tflite[] = {\n  ')
+    header_file.write(f'{hex_array}\n')
+    header_file.write('};\n\n')
