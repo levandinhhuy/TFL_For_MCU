@@ -1,6 +1,5 @@
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
@@ -25,12 +24,12 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y,
 )
 
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
+normalizer = tf.keras.layers.Normalization(axis=-1, name="input_norm")
+normalizer.adapt(X_train)
 
 model = tf.keras.Sequential([
     tf.keras.layers.Input(shape=(2,)),
+    normalizer,
     tf.keras.layers.Dense(16, activation="relu"),
     tf.keras.layers.Dense(8, activation="relu"),
     tf.keras.layers.Dense(3, activation="softmax")
@@ -86,9 +85,7 @@ model.save(PREFIX + ".h5")
 
 def predict_alert_level(temperature, humidity):
     sample = tf.convert_to_tensor([[temperature, humidity]], dtype=tf.float32)
-    scaled_sample = scaler.transform(sample.numpy())
-    scaled_sample = tf.convert_to_tensor(scaled_sample, dtype=tf.float32)
-    probs = model(scaled_sample, training=False).numpy()[0]
+    probs = model(sample, training=False).numpy()[0]
     level = int(tf.argmax(probs).numpy())
     return level, ALERT_LEVELS[level], probs
 
